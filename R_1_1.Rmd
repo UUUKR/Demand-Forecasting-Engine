@@ -1,0 +1,305 @@
+---
+title: "R_1"
+author: "Kevin"
+date: "June 20, 2019"
+output: html_document
+---
+```{R}
+library('ggplot2')
+library('forecast')
+library('tseries')
+library('outliers')
+library('readxl')
+library('vars')
+library('dplyr')
+library('plyr')
+library('boot')
+library('fpp')
+library('xts')
+library('VAR.etp')
+library('TSA')
+library('stats')
+library('OutliersO3')
+library('OutlierDetection')
+library('Hmisc')
+library('etl')
+library('Rserve')
+library('writexl')
+
+```
+```{r}
+DC_Shipment_1_Original_comb_sorted <- read_excel("C:/Users/kren/Downloads/DC Shipment 1 Original_comb_sorted.xlsx")
+```
+
+
+```{r}
+forecast_md<- function(x,y,z){
+  if(is.character(x)==TRUE)
+    {first_item <- subset(DC_Shipment_1_Original_comb_sorted,grepl(
+  x,DC_Shipment_1_Original_comb_sorted$inventory_item_name)==TRUE)
+    if (is.character(y)==TRUE)
+      cov_item <- subset(DC_Shipment_1_Original_comb_sorted,grepl(
+  y,DC_Shipment_1_Original_comb_sorted$inventory_item_name)==TRUE)
+    else
+      cov_item <- subset(DC_Shipment_1_Original_comb_sorted,DC_Shipment_1_Original_comb_sorted$vendor_item_num==y)
+  }else
+    {first_item <- subset(DC_Shipment_1_Original_comb_sorted,DC_Shipment_1_Original_comb_sorted$vendor_item_num==x)
+    if (is.character(y)==TRUE)
+      cov_item <- subset(DC_Shipment_1_Original_comb_sorted,grepl(
+  y,DC_Shipment_1_Original_comb_sorted$inventory_item_name)==TRUE)
+    else
+      cov_item <- subset(DC_Shipment_1_Original_comb_sorted,DC_Shipment_1_Original_comb_sorted$vendor_item_num==y)}
+
+ # list_item=list(first_item,cov_item)
+
+# }
+# forecast_md('Potato','Fries')
+
+  date_delivery=as.Date(first_item$delivery_date)
+  date_delivery_p=as.Date(cov_item$delivery_date)
+  quant_sum=aggregate(first_item$sum_quantity_adj,by=list(delivery_date=date_delivery),sum)
+  quant_sum_p=aggregate(cov_item$sum_quantity_adj,by=list(delivery_date=date_delivery_p),sum)
+  names(quant_sum_p)[2]<-'y'
+  quant_sum$delivery_date<-as.Date(quant_sum$delivery_date)
+  quant_sum_p$delivery_date<-as.Date(quant_sum_p$delivery_date)
+  quant=merge(quant_sum,quant_sum_p)
+  if (z==1)
+    {length(which(quant$x %in% outlier(quant$x)))
+    for (i in 1:length(which(quant$x %in% outlier(quant$x))))
+    {
+      rm_quant=quant[1:which(quant$x %in% outlier(quant$x))-1,]
+      new_x<-forecast(auto.arima(rm_quant$x),1)$mean
+      quant$x[which(quant$x %in% outlier(quant$x))]<-new_x
+      rm_quant_1=quant[1:which(quant$y %in% outlier(quant$y))-1,]
+      new_y<-forecast(auto.arima(rm_quant$y),1)$mean
+      quant$y[which(quant$y %in% outlier(quant$y))]<-new_y
+    }
+  }
+  list_item=list(quant_sum,quant)
+}
+```
+```{r}
+
+quant_sum=forecast_md('Potato','Fries',0)[[1]]
+quant=forecast_md('Potato','Fries',0)[[2]]
+ggplot(quant_sum, aes(delivery_date, x)) + geom_line() + scale_x_date('month')  + ylab("Daily Bike Checkouts") + xlab("")
+summa = ts(quant_sum[, c('x')])
+quant_sum$clean_summa = tsclean(summa)
+sum_ma = ts(na.omit(quant_sum$clean_summa), frequency=12)
+decomp = stl(sum_ma, s.window="periodic")
+deseasonal_sum <- seasadj(decomp)
+plot(decomp)
+
+```
+#split and replace the outliers
+```{r}
+set.seed(123)
+train_row = as.integer(0.9*nrow(quant))
+test_row = 1+train_row
+
+# length(which(quant$x %in% outlier(quant$x)))
+# for (i in 1:length(which(quant$x %in% outlier(quant$x))))
+# {
+# rm_quant=quant[1:which(quant$x %in% outlier(quant$x))-1,]
+# new_x<-forecast(auto.arima(rm_quant$x),1)$mean
+# quant$x[which(quant$x %in% outlier(quant$x))]<-new_x
+# rm_quant_1=quant[1:which(quant$y %in% outlier(quant$y))-1,]
+# new_y<-forecast(auto.arima(rm_quant$y),1)$mean
+# quant$y[which(quant$y %in% outlier(quant$y))]<-new_y
+# }
+
+train_1 = quant[1:train_row,]
+st_date=as.character(train_1$delivery_date[1])
+st_date=sapply(strsplit(st_date,'-'),'[',1:2)
+st_date=as.numeric(st_date) 
+train_2 = ts(train_1$x,start=c(st_date[1],st_date[2]),frequency = 12)
+test = quant[test_row:nrow(quant),]
+train_3 = ts(train_1$y,start=c(st_date[1],st_date[2]),frequency = 12)
+dx = cbind(train_2,train_3)
+dx_1 = ts(quant[,2:3], end = c(2019,1), frequency = 12)
+quant_ts<-ts(quant$x,end=c(2019,1),frequency=12)
+```
+#check the stationarity
+```{r}
+
+adf.test(train_2,alternative = 'stationary')
+acf(train_2,lag.max = NULL)
+sum_train_1=diff(train_2,differences = 1)
+adf.test(sum_train_1,alternative = 'stationary')
+acf(sum_train_1, plot=TRUE)
+fit <- tbats(train_2)
+seasonal <- !is.null(fit$seasonal)
+
+
+```
+
+```{r}
+
+#EXPANDING AND ROLLING WINDOW TS CV
+ts_model_sarima=function(x,h){forecast(auto.arima(x),h=h)}
+error_1<-tsCV(train_2,ts_model_sarima,h=1)
+error_2<-tsCV(train_2,ts_model_sarima,h=1,window = 12)
+autoplot(error_1,series = 'Expanding Window')+
+  autolayer(error_2,series = 'Rolling Window')
+print(sqrt(mean(error_1^2,na.rm = TRUE)))
+print(sqrt(mean(error_2^2,na.rm = TRUE)))
+```
+
+```{r}
+Cutlery_Units_Shipped <- read_excel("C:/Users/kren/Downloads/Cutlery_Units_Shipped.xlsx")
+quant=Cutlery_Units_Shipped[,1:5]
+quant['agg']=quant[,2]+quant[,4]+quant[,5]
+quant_ts=ts(quant$Fork,end=c(2019,1),frequency=12)
+dx_1=ts(quant[,2:6],end=c(2019,1),frequency=12)
+
+
+```
+
+
+```{r}
+k <- length(quant_ts)-12
+n <- length(quant_ts)
+quant_ts
+p <- 12
+H <- 12
+mae_1_sarima <- matrix(NA,n-k,n-k)
+mae_2_sarima <- matrix(NA,n-k,n-k)
+mae_1_arima <- matrix(NA,n-k,n-k)
+mae_2_arima <- matrix(NA,n-k,n-k)
+mae_1_hw <- matrix(NA,n-k,n-k)
+mae_2_hw <- matrix(NA,n-k,n-k)
+mae_1_ets <- matrix(NA,n-k,n-k)
+mae_2_ets <- matrix(NA,n-k,n-k)
+mae_1_var <- matrix(NA,n-k,n-k)
+mae_2_var <- matrix(NA,n-k,n-k)
+mae_1_sarimax <- matrix(NA,n-k,n-k)
+mae_2_sarimax <- matrix(NA,n-k,n-k)
+st <- tsp(quant_ts)[1]+(k-2)/p
+
+sarima_f=function(x,h){
+fit_1_sarima<-auto.arima(x,D = 1, max.D = 10, stepwise=FALSE,seasonal = TRUE,ic='aic',stationary = FALSE,allowdrift  = TRUE,lambda = NULL,biasadj = TRUE)
+fct_1_sarima<-forecast(fit_1_sarima,h)
+return(fct_1_sarima)}
+
+arima_f=function(x,h){
+fit_1_arima<-auto.arima(x,D = 0, max.D = 10, stepwise=FALSE,seasonal = FALSE,ic='aic',stationary = FALSE,allowdrift  = TRUE,lambda = NULL,biasadj = TRUE)
+fct_1_arima<-forecast(fit_1_arima,h)
+return(fct_1_arima)}
+
+hw_f=function(x,h){
+fit_1_hw<-hw(x,h=H,seasonal = c('additive'))
+fct_1_hw<-forecast(fit_1_hw,h)
+return(fct_1_hw)}
+
+ets_f=function(x,h){
+fit_1_ets<-ets(x,model="ZZZ")
+fct_1_ets<-forecast(fit_1_ets,h)
+return(fct_1_ets)}
+
+var_f=function(x,h){
+fit_1_var<-VAR(x, lag.max=10 ,ic = "AIC",type='const')
+fct_1_var<-forecast(fit_1_var,h)
+return(fct_1_var)}
+
+sarimax_f=function(x,y,h){
+  fit_1_sarimax<-auto.arima(x[,1],xreg=x[,2],D=1,max.D = 10, stepwise=FALSE,seasonal = TRUE,ic='aic',stationary = FALSE,allowdrift  = TRUE,lambda = NULL,biasadj = TRUE)
+  fct_1_sarimax<-forecast(fit_1_sarimax,xreg=y[,2])
+  return(fct_1_sarimax)}
+
+
+
+for(i in 1:(n-k))
+{
+  cv_train_1<-window(quant_ts,end=st+i/p)
+  cv_train_2<-window(quant_ts,start=st+(i-k+1)/p,end=st+i/p)
+  cv_train_3<-window(dx_1[,c('Fork','agg')],end=st+i/p)
+  cv_train_4<-window(dx_1[,c('Fork','agg')],start=st+(i-k+1)/p,end=st+i/p)
+  cv_test<-window(quant_ts,start=st+(i+1)/p,end=c(2019,1))
+  cv_test_1<-window(dx_1[,c('Fork','agg')],start=st+(i+1)/p,end=c(2019,1))
+  if(i<15) {
+  #cat(c("*** CV", i,":","len(Expanding Window):",length(train_1), "len(Sliding Window):",length(train_2), "len(Test):",length(test),'\n'  ))
+  cat(c("*** TRAIN -  Expanding WIndow:",tsp(cv_train_1)[1],'-',tsp(cv_train_1)[2],'\n'))
+  cat(c("*** TRAIN - Sliding WIndow:",tsp(cv_train_2)[1],'-',tsp(cv_train_2)[2],'\n'))
+  cat(c("*** TEST:",tsp(cv_test)[1],'-',tsp(cv_test)[2],'\n'))
+  cat("*************************** \n \n")}
+
+  mae_1_sarima[i,1:length(cv_test)] <- abs(sarima_f(cv_train_1,H)[['mean']]-cv_test)
+  mae_2_sarima[i,1:length(cv_test)] <- abs(sarima_f(cv_train_2,H)[['mean']]-cv_test)
+
+  
+  mae_1_arima[i,1:length(cv_test)] <- abs(arima_f(cv_train_1,H)[['mean']]-cv_test)
+  mae_2_arima[i,1:length(cv_test)] <- abs(arima_f(cv_train_2,H)[['mean']]-cv_test)
+
+
+  mae_1_hw[i,1:length(cv_test)] <- abs(hw_f(cv_train_1,H)[['mean']]-cv_test)
+  mae_2_hw[i,1:length(cv_test)] <- abs(hw_f(cv_train_2,H)[['mean']]-cv_test)
+
+
+  mae_1_ets[i,1:length(cv_test)] <- abs(ets_f(cv_train_1,H)[['mean']]-cv_test)
+  mae_2_ets[i,1:length(cv_test)] <- abs(ets_f(cv_train_2,H)[['mean']]-cv_test)
+
+
+  mae_1_var[i,1:length(cv_test)] <- abs(var_f(cv_train_3,H)$forecast$Fork$mean-cv_test)
+  mae_2_var[i,1:length(cv_test)] <- abs(var_f(cv_train_4,H)$forecast$Fork$mean-cv_test)
+
+
+  mae_1_sarimax[i,1:length(cv_test)] <- abs(sarimax_f(cv_train_3,cv_test_1,H)[['mean']]-cv_test)
+  mae_2_sarimax[i,1:length(cv_test)] <- abs(sarimax_f(cv_train_4,cv_test_1,H)[['mean']]-cv_test)
+
+}
+```
+```{r}
+error_sarima_exp<-mean(mae_1_sarima,na.rm = TRUE)
+error_sarima_rol<-mean(mae_2_sarima,na.rm = TRUE)
+error_sarima<-1/2*(error_sarima_exp+error_sarima_rol)
+error_arima_exp<-mean(mae_1_arima,na.rm = TRUE)
+error_arima_rol<-mean(mae_2_arima,na.rm = TRUE)
+error_arima<-1/2*(error_arima_exp+error_arima_rol)
+error_hw_exp<-mean(mae_1_hw,na.rm = TRUE)
+error_hw_rol<-mean(mae_2_hw,na.rm = TRUE)
+error_hw<-1/2*(error_hw_exp+error_hw_rol)
+error_ets_exp<-mean(mae_1_ets,na.rm = TRUE)
+error_ets_rol<-mean(mae_2_ets,na.rm = TRUE)
+error_ets<-1/2*(error_ets_exp+error_ets_rol)
+error_var_exp<-mean(mae_1_var,na.rm = TRUE)
+error_var_rol<-mean(mae_2_var,na.rm = TRUE)
+error_var<-1/2*(error_var_exp+error_var_rol)
+error_sarimax_exp<-mean(mae_1_sarimax,na.rm = TRUE)
+error_sarimax_rol<-mean(mae_2_sarimax,na.rm = TRUE)
+error_sarimax<-1/2*(error_sarimax_exp+error_sarimax_rol)
+
+err_term<-c('arima_f'=error_arima,'sarima_f'=error_sarima,'sarimax_f'=error_sarimax,'hw_f'=error_hw,'var_f'=error_var,'ets_f'=error_ets)
+err_term
+best_name=names(err_term[which.min(err_term)])
+best_f<-match.fun(best_name)
+
+if (grepl('sarimax',best_name)==FALSE)
+{
+  if (grepl('var',best_name)==FALSE)
+  {best_f(dx_1[,'Fork'],60)
+   plot(best_f(dx_1[,'Fork'],60))
+   summary(best_f(dx_1[,'Fork'],60))}
+  else 
+  {best_f(dx_1,60)
+   plot(best_f(dx_1,60))
+   summary(best_f(dx_1,60))}
+}else
+{
+  fit_reg_1 <- auto.arima(dx_1[,'agg'],D=1,seasonal = TRUE)
+  x_1=forecast(fit_reg_1,60)$mean
+  fit_reg_2 <- auto.arima(dx_1[,'Fork'],xreg = dx_1[,'agg'],D=1,seasonal = TRUE)
+  fct_reg <- forecast(fit_reg_2,xreg=x_1)
+  plot(fct_reg)
+  summary(fct_reg)
+}
+result=summary(fct_reg)
+#result=summary(best_f(dx_1[,'Fork'],60))
+```
+
+```{r}
+?write_xlsx()
+write_xlsx(result,path='results5.xlsx',col_names = TRUE, format_headers = TRUE)
+```
+
+
+
